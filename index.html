@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
 <style>
   :root{
     --cork:#c8a878;
@@ -417,6 +418,7 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const boardRef = firebase.firestore().collection('boards').doc('viagem');
+const photosRef = firebase.storage().ref('viagem_photos');
 
 function pushToFirestore(){
   boardRef.set({ items, savings }).catch(err=>{
@@ -536,36 +538,44 @@ function resizeImage(file, maxDim, quality, cb){
       const canvas = document.createElement('canvas');
       canvas.width = w; canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-      cb(canvas.toDataURL('image/jpeg', quality));
+      canvas.toBlob(cb, 'image/jpeg', quality);
     };
     img.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
 
-function handlePhotoUpload(event, id){
+async function handlePhotoUpload(event, id){
   const file = event.target.files[0];
   if(!file) return;
-  resizeImage(file, 700, 0.65, dataUrl => {
-    const it = items.find(i=>i.id===id);
-    if(!it.photos) it.photos = [];
-    it.photos.push(dataUrl);
+  const input = event.target;
+  input.disabled = true;
+  resizeImage(file, 700, 0.65, async blob => {
     try{
+      const path = `${id}_${Date.now()}.jpg`;
+      await photosRef.child(path).put(blob);
+      const url = await photosRef.child(path).getDownloadURL();
+      const it = items.find(i=>i.id===id);
+      if(!it.photos) it.photos = [];
+      it.photos.push({ url, path });
       save();
+      renderBoard();
     } catch(e){
-      it.photos.pop();
-      alert('O armazenamento deste navegador está cheio. Remova algumas fotos antigas para adicionar novas.');
+      console.error('Erro ao enviar foto:', e);
+      alert('Não foi possível enviar a foto. Confira sua conexão e tente de novo.');
+    } finally {
+      input.disabled = false;
+      input.value = '';
     }
-    renderBoard();
   });
-  event.target.value = '';
 }
 
 function openPhoto(itemId, idx){
   const it = items.find(i=>i.id===itemId);
   if(!it || !it.photos[idx]) return;
   lightboxCtx = { itemId, photoIdx: idx };
-  document.getElementById('lightboxImg').src = it.photos[idx];
+  const p = it.photos[idx];
+  document.getElementById('lightboxImg').src = p.url || p;
   document.getElementById('lightbox').classList.add('open');
 }
 
@@ -578,6 +588,10 @@ function closeModalBg(e){
 function deleteCurrentPhoto(){
   const it = items.find(i=>i.id===lightboxCtx.itemId);
   if(it){
+    const p = it.photos[lightboxCtx.photoIdx];
+    if(p && p.path){
+      photosRef.child(p.path).delete().catch(()=>{});
+    }
     it.photos.splice(lightboxCtx.photoIdx, 1);
     save();
     renderBoard();
@@ -592,7 +606,7 @@ function cardHtml(it){
   const c = CAT_MAP[it.cat] || CATEGORIES[0];
   const isNew = it.id === lastAddedId;
   const photos = it.photos || [];
-  const photosHtml = photos.map((p, idx) => `<img class="photo-thumb" src="${p}" onclick="openPhoto(${it.id}, ${idx})">`).join('');
+  const photosHtml = photos.map((p, idx) => `<img class="photo-thumb" src="${p.url || p}" onclick="openPhoto(${it.id}, ${idx})">`).join('');
   return `
   <div class="card ${it.done?'done':''} ${isNew?'new':''}">
     <div class="card-top">
